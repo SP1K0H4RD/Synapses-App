@@ -28,7 +28,8 @@ export async function generateMedicalMap(
   // Retry logic: 5 retries with 15s delay
   const callWithRetry = async (objective: string, retries = 5): Promise<string> => {
     try {
-      const response = await fetch("/api/generate-block", {
+      const apiUrl = new URL("./api/generate-block", window.location.href);
+      const response = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
