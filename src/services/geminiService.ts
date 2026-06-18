@@ -5,6 +5,29 @@ export async function generateMedicalMap(
   centralTopic: string,
   apiKey?: string
 ): Promise<string> {
+  const getApiCandidateUrls = (): URL[] => {
+    const appUrlRaw = (process as any)?.env?.APP_URL as string | undefined;
+    const appUrl = typeof appUrlRaw === "string" ? appUrlRaw.trim() : "";
+    const origin = window.location.origin;
+    const pathname = window.location.pathname;
+    const lastSegment = pathname.split("/").filter(Boolean).pop() ?? "";
+    const basePath =
+      pathname.endsWith("/") ? pathname : lastSegment.includes(".") ? pathname.replace(/[^/]+$/, "") : `${pathname}/`;
+
+    const urls = [
+      ...(appUrl ? [new URL("/api/generate-block", appUrl)] : []),
+      new URL("api/generate-block", `${origin}${basePath}`),
+      new URL("/api/generate-block", origin)
+    ];
+    const seen = new Set<string>();
+    return urls.filter((u) => {
+      const key = u.toString();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
   // Parse and Clean Objectives
   const listObjectives = objetivos.split('\n')
     .map((o: string) => {
@@ -28,26 +51,53 @@ export async function generateMedicalMap(
   // Retry logic: 5 retries with 15s delay
   const callWithRetry = async (objective: string, retries = 5): Promise<string> => {
     try {
-      const apiUrl = new URL("./api/generate-block", window.location.href);
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          materiaisBrutos,
-          objective,
-          centralTopic,
-          apiKey,
-          extensionPerObjective
-        }),
-      });
+      const candidates = getApiCandidateUrls();
+      let lastError: unknown = null;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erro ${response.status}`);
+      for (const apiUrl of candidates) {
+        try {
+          const response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              materiaisBrutos,
+              objective,
+              centralTopic,
+              apiKey,
+              extensionPerObjective
+            }),
+          });
+
+          if (!response.ok) {
+            const contentType = response.headers.get("content-type") || "";
+            const errorBody = contentType.includes("application/json")
+              ? await response.json().catch(() => ({}))
+              : await response.text().catch(() => "");
+
+            const errorMessage =
+              typeof errorBody === "object" && errorBody && "error" in errorBody
+                ? String((errorBody as any).error)
+                : typeof errorBody === "string" && errorBody.trim().length > 0
+                  ? errorBody
+                  : `Erro ${response.status}`;
+
+            if (response.status === 404) {
+              lastError = new Error(`Erro 404 em ${apiUrl.toString()}`);
+              continue;
+            }
+
+            throw new Error(`${errorMessage}`);
+          }
+
+          const data = await response.json().catch(() => ({}));
+          return (data as any).markdown || "";
+        } catch (e) {
+          lastError = e;
+        }
       }
 
-      const data = await response.json();
-      return data.markdown || "";
+      if (lastError instanceof Error) throw lastError;
+      throw new Error("Falha ao chamar a API.");
     } catch (error: any) {
       if (retries > 0 && (error.message.includes('429') || error.message.includes('quota') || error.message.includes('timeout'))) {
         console.warn(`[GEMINI] Falha no bloco. Retentando em 15s... (${retries} restantes)`);
