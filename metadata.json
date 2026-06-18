@@ -1,0 +1,6 @@
+{
+  "name": "Synapses App",
+  "description": "Gerador de mapas mentais médicos estruturados com rigor acadêmico e conversão direta para XMind.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
