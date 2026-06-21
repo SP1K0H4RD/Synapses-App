@@ -26,6 +26,8 @@ export default function App() {
   
   // API Key State
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
+  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
+  const [apiKeySavedAt, setApiKeySavedAt] = useState<number | null>(null);
   const [showApiInput, setShowApiInput] = useState(false);
   const [showKey, setShowKey] = useState(false);
   
@@ -33,9 +35,11 @@ export default function App() {
   
   const studyInputRef = useRef<HTMLInputElement>(null);
 
-  const saveApiKey = (val: string) => {
-    setApiKey(val);
-    localStorage.setItem('GEMINI_API_KEY', val);
+  const confirmApiKey = () => {
+    const trimmed = apiKeyInput.trim();
+    setApiKey(trimmed);
+    localStorage.setItem('GEMINI_API_KEY', trimmed);
+    setApiKeySavedAt(Date.now());
   };
 
   const validateAndSetFiles = (files: FileList | File[]) => {
@@ -205,8 +209,8 @@ export default function App() {
                         <div className="relative">
                           <input 
                             type={showKey ? "text" : "password"}
-                            value={apiKey}
-                            onChange={(e) => saveApiKey(e.target.value)}
+                            value={apiKeyInput}
+                            onChange={(e) => setApiKeyInput(e.target.value)}
                             placeholder="Insira sua Gemini API Key..."
                             className="w-full bg-slate-50 border border-slate-100 rounded-xl py-2 px-3 pr-10 text-xs focus:ring-2 focus:ring-indigo-500/20 focus:outline-none transition-all"
                           />
@@ -217,6 +221,20 @@ export default function App() {
                             {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                           </button>
                         </div>
+                        <button
+                          onClick={() => {
+                            confirmApiKey();
+                            setShowApiInput(false);
+                          }}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2 rounded-xl transition-all"
+                        >
+                          Confirmar API Key
+                        </button>
+                        {apiKeySavedAt && (
+                          <p className="text-[9px] text-green-700 bg-green-50 border border-green-100 rounded-xl px-3 py-2 leading-tight">
+                            API Key confirmada com sucesso.
+                          </p>
+                        )}
                         <p className="text-[9px] text-slate-400 leading-tight">
                           Sua chave fica salva apenas no seu navegador. Obtenha uma em <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-500 underline">AI Studio</a>.
                         </p>
@@ -449,5 +467,4 @@ export default function App() {
     </div>
   );
 }
-
 
