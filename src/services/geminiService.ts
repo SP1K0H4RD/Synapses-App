@@ -6,7 +6,7 @@ export async function generateMedicalMap(
   apiKey?: string
 ): Promise<string> {
   const getApiCandidateUrls = (): URL[] => {
-    const appUrlRaw = (process as any)?.env?.APP_URL as string | undefined;
+    const appUrlRaw = (globalThis as any).__APP_URL__ as string | undefined;
     const appUrl = typeof appUrlRaw === "string" ? appUrlRaw.trim() : "";
     const origin = window.location.origin;
     const pathname = window.location.pathname;
