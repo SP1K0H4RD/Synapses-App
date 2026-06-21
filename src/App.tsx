@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { 
   Upload, FileDown, FileText, CheckCircle2, AlertCircle, 
   Loader2, GraduationCap, Microscope, Stethoscope,
@@ -14,8 +14,11 @@ import confetti from 'canvas-confetti';
 import { convertMdToXMind } from './services/xmindConverter';
 import { generateMedicalMap } from './services/geminiService';
 import { extractTextFromPdf } from './services/pdfService';
+import { supabase } from './services/supabaseClient';
 
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [session, setSession] = useState<any>(null);
   const [studyFiles, setStudyFiles] = useState<File[]>([]);
   const [centralTopic, setCentralTopic] = useState('');
   const [objectives, setObjectives] = useState('');
@@ -34,6 +37,48 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   
   const studyInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!mounted) return;
+      setSession(newSession);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const userEmail = useMemo(() => session?.user?.email as string | undefined, [session]);
+
+  const signInWithGoogle = async () => {
+    setError(null);
+    const { error: signInError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/`
+      }
+    });
+    if (signInError) {
+      setError(signInError.message);
+    }
+  };
+
+  const signOut = async () => {
+    setError(null);
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) setError(signOutError.message);
+  };
 
   const confirmApiKey = () => {
     const trimmed = apiKeyInput.trim();
@@ -173,6 +218,29 @@ export default function App() {
               <span className="flex items-center"><GraduationCap className="w-4 h-4 mr-1" /> Rigor Acadêmico</span>
             </div>
 
+            <div className="hidden md:flex items-center space-x-2">
+              {authLoading ? (
+                <span className="text-xs text-slate-400 font-semibold">Carregando...</span>
+              ) : session ? (
+                <>
+                  <span className="text-xs text-slate-500 font-semibold max-w-56 truncate">{userEmail}</span>
+                  <button
+                    onClick={signOut}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all"
+                  >
+                    Sair
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={signInWithGoogle}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all"
+                >
+                  Entrar com Google
+                </button>
+              )}
+            </div>
+
             <div className="relative">
               <button 
                 onClick={() => setShowApiInput(!showApiInput)}
@@ -249,22 +317,55 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-12">
-          {error && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center space-x-2 bg-red-50 text-red-700 p-4 rounded-2xl border border-red-100 text-sm mb-6">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <p>{error}</p>
-            </motion.div>
-          )}
-        </div>
-
-        {/* Left Column: Inputs */}
-        <div className="lg:col-span-5 space-y-8 order-1">
-          <section className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
-            <div className="flex items-center space-x-2 text-indigo-600 mb-2">
-              <BookOpen className="w-5 h-5" />
-              <h2 className="font-semibold text-lg">Insira Abaixo os Materiais</h2>
+        {!authLoading && !session ? (
+          <div className="lg:col-span-12">
+            {error && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center space-x-2 bg-red-50 text-red-700 p-4 rounded-2xl border border-red-100 text-sm mb-6">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <p>{error}</p>
+              </motion.div>
+            )}
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <div className="flex items-center space-x-2 text-indigo-600 mb-3">
+                <Key className="w-5 h-5" />
+                <h2 className="font-semibold text-lg">Faça login para continuar</h2>
+              </div>
+              <p className="text-sm text-slate-600 mb-6">
+                Entre com sua conta Google para acessar o app.
+              </p>
+              <button
+                onClick={signInWithGoogle}
+                className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-5 py-3 rounded-2xl transition-all"
+              >
+                Entrar com Google
+              </button>
             </div>
+          </div>
+        ) : authLoading ? (
+          <div className="lg:col-span-12">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex items-center space-x-3 text-slate-600">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-sm font-semibold">Carregando sessão...</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="lg:col-span-12">
+              {error && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center space-x-2 bg-red-50 text-red-700 p-4 rounded-2xl border border-red-100 text-sm mb-6">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <p>{error}</p>
+                </motion.div>
+              )}
+            </div>
+
+            {/* Left Column: Inputs */}
+            <div className="lg:col-span-5 space-y-8 order-1">
+              <section className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+                <div className="flex items-center space-x-2 text-indigo-600 mb-2">
+                  <BookOpen className="w-5 h-5" />
+                  <h2 className="font-semibold text-lg">Insira Abaixo os Materiais</h2>
+                </div>
             
             {/* Uploaders */}
             <div className="space-y-4">
@@ -463,8 +564,9 @@ export default function App() {
             </div>
           </div>
         </div>
+          </>
+        )}
       </main>
     </div>
   );
 }
-
