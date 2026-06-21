@@ -14,11 +14,14 @@ import confetti from 'canvas-confetti';
 import { convertMdToXMind } from './services/xmindConverter';
 import { generateMedicalMap } from './services/geminiService';
 import { extractTextFromPdf } from './services/pdfService';
-import { supabase } from './services/supabaseClient';
+import { isSupabaseConfigured, supabase } from './services/supabaseClient';
 
 export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [session, setSession] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
+  const [tokens, setTokens] = useState<number | null>(null);
+  const [tokensLoading, setTokensLoading] = useState(false);
   const [studyFiles, setStudyFiles] = useState<File[]>([]);
   const [centralTopic, setCentralTopic] = useState('');
   const [objectives, setObjectives] = useState('');
@@ -39,18 +42,32 @@ export default function App() {
   const studyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      setSession(null);
+      setUser(null);
+      setTokens(null);
+      setError('Configuração do Supabase ausente no deploy. Defina VITE_SUPABASE_URL e VITE_SUPABASE_PUBLISHABLE_KEY (ou VITE_SUPABASE_ANON_KEY).');
+      return;
+    }
+
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
+    const refreshAuth = async () => {
+      const [{ data: sessionData }, { data: userData }] = await Promise.all([
+        supabase.auth.getSession(),
+        supabase.auth.getUser()
+      ]);
       if (!mounted) return;
-      setSession(data.session);
+      setSession(sessionData.session);
+      setUser(userData.user ?? null);
       setAuthLoading(false);
-    });
+    };
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (!mounted) return;
-      setSession(newSession);
-      setAuthLoading(false);
+    refreshAuth();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
+      refreshAuth();
     });
 
     return () => {
@@ -59,10 +76,48 @@ export default function App() {
     };
   }, []);
 
-  const userEmail = useMemo(() => session?.user?.email as string | undefined, [session]);
+  useEffect(() => {
+    if (!supabase) return;
+    if (!user?.id) {
+      setTokens(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTokens = async () => {
+      setTokensLoading(true);
+      const { data, error: tokensError } = await supabase
+        .from('profiles')
+        .select('tokens')
+        .eq('user_id', user.id)
+        .single();
+
+      if (cancelled) return;
+      if (tokensError) {
+        setTokens(null);
+      } else {
+        const value = (data as any)?.tokens;
+        setTokens(typeof value === 'number' ? value : Number(value));
+      }
+      setTokensLoading(false);
+    };
+
+    loadTokens();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  const userEmail = useMemo(() => user?.email as string | undefined, [user]);
 
   const signInWithGoogle = async () => {
     setError(null);
+    if (!supabase) {
+      setError('Supabase não configurado. Defina as variáveis de ambiente do Supabase.');
+      return;
+    }
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -76,6 +131,7 @@ export default function App() {
 
   const signOut = async () => {
     setError(null);
+    if (!supabase) return;
     const { error: signOutError } = await supabase.auth.signOut();
     if (signOutError) setError(signOutError.message);
   };
@@ -130,9 +186,45 @@ export default function App() {
   };
 
   const handleGenerate = async () => {
+    if (!supabase) {
+      setError('Supabase não configurado. Defina as variáveis de ambiente do Supabase.');
+      return;
+    }
+
     if (!apiKey) {
       setError('A API Key do Gemini é obrigatória para o funcionamento do app. Configure-a no topo da página.');
       setShowApiInput(true);
+      return;
+    }
+
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    const currentUser = userData.user;
+    if (userError || !currentUser) {
+      setError('Faça login para continuar.');
+      return;
+    }
+
+    const { data: profileData, error: profileError } = await supabase
+      .from('profiles')
+      .select('tokens')
+      .eq('user_id', currentUser.id)
+      .single();
+
+    if (profileError) {
+      setError('Erro ao buscar tokens. Tente novamente.');
+      return;
+    }
+
+    const currentTokens = (profileData as any)?.tokens;
+    if (typeof currentTokens !== 'number' || currentTokens < 10) {
+      setError('Tokens insuficientes. Você precisa de pelo menos 10 tokens para usar a ferramenta.');
+      return;
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      setError('Sessão inválida. Faça login novamente.');
       return;
     }
 
@@ -152,7 +244,7 @@ export default function App() {
         fullStudyText += `\n--- SOURCE: ${file.name} ---\n${text}\n`;
       }
       
-      const result = await generateMedicalMap(fullStudyText, objectives, extension, centralTopic, apiKey);
+      const result = await generateMedicalMap(fullStudyText, objectives, extension, centralTopic, apiKey, accessToken);
       setGeneratedMd(result);
       
       confetti({
@@ -176,6 +268,16 @@ export default function App() {
       }
     } finally {
       setIsProcessing(false);
+      const { data: refreshedUser } = await supabase.auth.getUser();
+      if (refreshedUser.user?.id) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('tokens')
+          .eq('user_id', refreshedUser.user.id)
+          .single();
+        const value = (data as any)?.tokens;
+        setTokens(typeof value === 'number' ? value : value != null ? Number(value) : null);
+      }
     }
   };
 
@@ -221,8 +323,11 @@ export default function App() {
             <div className="hidden md:flex items-center space-x-2">
               {authLoading ? (
                 <span className="text-xs text-slate-400 font-semibold">Carregando...</span>
-              ) : session ? (
+              ) : user ? (
                 <>
+                  <span className="text-xs text-slate-500 font-semibold">
+                    {tokensLoading ? 'Tokens: ...' : typeof tokens === 'number' ? `Tokens: ${tokens}` : 'Tokens: —'}
+                  </span>
                   <span className="text-xs text-slate-500 font-semibold max-w-56 truncate">{userEmail}</span>
                   <button
                     onClick={signOut}
@@ -317,7 +422,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-12 gap-8">
-        {!authLoading && !session ? (
+        {!authLoading && !user ? (
           <div className="lg:col-span-12">
             {error && (
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center space-x-2 bg-red-50 text-red-700 p-4 rounded-2xl border border-red-100 text-sm mb-6">

@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -30,20 +31,97 @@ async function startServer() {
     }
   };
 
-  // API Route for Mind Map Generation (Single Block/Objective)
-  app.post("/api/generate-block", async (req, res) => {
-    const { materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = req.body;
-    
-    const usedApiKey = apiKey || process.env.GEMINI_API_KEY;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey =
+    process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
+  const getBearerToken = (req: express.Request): string | null => {
+    const raw = req.header("authorization") || "";
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (!lower.startsWith("bearer ")) return null;
+    const token = trimmed.slice(7).trim();
+    return token.length > 0 ? token : null;
+  };
+
+  const createSupabaseForRequest = (accessToken: string) => {
+    return createClient(supabaseUrl as string, supabaseAnonKey as string, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
+  };
+
+  const parseObjectives = (objetivosRaw: string): string[] => {
+    const bloomVerbs =
+      /^(Entender|Analisar|Compreender|Descrever|Explicar|Discutir|Identificar|Aplicar|Avaliar|Sintetizar|Conhecer|Definir|Citar|Reconhecer|Diferenciar|Relacionar|Indicar|Listar|Nomear|Escrever|Relatar|Revisar|Localizar|Esquematizar|Utilizar|Organizar|Generalizar|Classificar|Comparar|Contrastear|Criticar|Justificar|Planejar|Propor|Formular|Criar|Construir)\s+/i;
+
+    return String(objetivosRaw || "")
+      .split("\n")
+      .map((o) => {
+        let cleaned = o.replace(/^\d+[\.\-\)]\s*|^\-\s*/, "").trim();
+        cleaned = cleaned.replace(/\s*\([^)]*\)/g, "").trim();
+        cleaned = cleaned.replace(bloomVerbs, "");
+        return cleaned.trim();
+      })
+      .filter((o) => o.length > 2);
+  };
+
+  app.post("/api/generate-map", async (req, res) => {
+    const { materiaisBrutos, objetivos, centralTopic, apiKey, extensao } = req.body as Record<string, unknown>;
+
+    if (!isSupabaseConfigured) {
+      return res.status(500).json({ error: "Supabase não configurado no servidor." });
+    }
+
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+      return res.status(401).json({ error: "Faça login para continuar." });
+    }
+
+    const usedApiKey = (typeof apiKey === "string" ? apiKey : "") || process.env.GEMINI_API_KEY;
     if (!usedApiKey) {
       return res.status(400).json({ error: "Gemini API Key is required." });
     }
 
+    const central = typeof centralTopic === "string" ? centralTopic.trim() : "";
+    if (!central) {
+      return res.status(400).json({ error: "Tópico central é obrigatório." });
+    }
+
+    const objectivesList = parseObjectives(typeof objetivos === "string" ? objetivos : "");
+    if (objectivesList.length === 0) {
+      return res.status(400).json({ error: "Nenhum objetivo identificado." });
+    }
+
+    const totalExtension = typeof extensao === "number" && Number.isFinite(extensao) ? extensao : Number(extensao);
+    const normalizedExtension = Number.isFinite(totalExtension) ? Math.max(100, Math.floor(totalExtension)) : 500;
+    const extensionPerObjective = Math.floor(normalizedExtension / objectivesList.length);
+
     try {
+      const sb = createSupabaseForRequest(accessToken);
+      const { data: userData, error: userError } = await sb.auth.getUser();
+      const user = userData?.user;
+      if (userError || !user) {
+        return res.status(401).json({ error: "Sessão inválida. Faça login novamente." });
+      }
+
+      const { data: allowed, error: rpcError } = await sb.rpc("use_tokens", { p_user_id: user.id, cost: 10 });
+      if (rpcError) {
+        return res.status(500).json({ error: "Falha ao validar tokens." });
+      }
+      if (allowed !== true) {
+        return res.status(402).json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." });
+      }
+
       const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
-      const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
+      const materiais = typeof materiaisBrutos === "string" ? materiaisBrutos : "";
+      let finalMarkdown = `# ${central}\n\n`;
+
+      for (const objective of objectivesList) {
+        const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
 
 ESTRUTURA OBRIGATÓRIA (Ritmo de Pontes):
 Cada nível do mapa deve alternar entre [CONCEITO] e [CONECTIVO].
@@ -74,37 +152,48 @@ REGRAS DE EXECUÇÃO:
 6. RAMIFICAÇÃO: Crie múltiplas ramificações laterais para melhorar o design visual.
 
 Gere o Markdown começando diretamente em ## ${objective}.`;
-      
-      const prompt = `
-MATERIAIS DE ESTUDO (Use como fonte absoluta):
-${materiaisBrutos.substring(0, 45000)}
 
-TÓPICO CENTRAL DO MAPA: ${centralTopic}
+        const prompt = `
+MATERIAIS DE ESTUDO (Use como fonte absoluta):
+${materiais.substring(0, 45000)}
+
+TÓPICO CENTRAL DO MAPA: ${central}
 OBJETIVO ESPECÍFICO DESTE RAMO: ${objective}
 
 INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramificações laterais. Seja prolixo no detalhamento técnico interno, garantindo o rigor acadêmico médico.`;
-      
-      const interaction = await ai.interactions.create({
-        model: "gemini-3.5-flash",
-        input: prompt,
-        system_instruction: sysInst,
-      });
 
-      let branchText = "";
-      for (const step of interaction.steps) {
-        if (step.type === 'model_output') {
-          const textContent = step.content?.find(c => c.type === 'text');
-          if (textContent && textContent.text) {
-            branchText += textContent.text;
+        const interaction = await retryWithDelay(
+          () =>
+            ai.interactions.create({
+              model: "gemini-3.5-flash",
+              input: prompt,
+              system_instruction: sysInst,
+            }),
+          5,
+          15000
+        );
+
+        let branchText = "";
+        for (const step of interaction.steps) {
+          if (step.type === "model_output") {
+            const textContent = (step as any).content?.find((c: any) => c?.type === "text");
+            if (textContent?.text) branchText += String(textContent.text);
           }
         }
+
+        finalMarkdown += branchText.trim() + "\n\n";
+        await new Promise((r) => setTimeout(r, 1000));
       }
 
-      res.json({ markdown: branchText.trim() });
+      res.json({ markdown: finalMarkdown.trim() });
     } catch (error: any) {
       console.error("[SERVER ERROR]", error);
       res.status(500).json({ error: error.message || "Internal Server Error" });
     }
+  });
+
+  app.post("/api/generate-block", (_req, res) => {
+    res.status(410).json({ error: "Endpoint descontinuado. Atualize o cliente." });
   });
 
   // Vite integration
