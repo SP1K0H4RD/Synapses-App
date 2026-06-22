@@ -2,6 +2,26 @@ import { GoogleGenAI } from "@google/genai";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// #region debug-point A:report-helper
+const reportDebug = (hypothesisId: string, location: string, msg: string, data: Record<string, unknown> = {}) => {
+  const debugServerUrl = process.env.DEBUG_SERVER_URL || "http://127.0.0.1:7777/event";
+  const sessionId = process.env.DEBUG_SESSION_ID || "generate-block-timeout";
+  fetch(debugServerUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId,
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+};
+// #endregion
+
 const corsHeaders = (request: Request): Record<string, string> => {
   const origin = request.headers.get("origin") || "*";
   return {
@@ -57,7 +77,7 @@ const getBearerToken = (request: Request): string | null => {
   return token.length > 0 ? token : null;
 };
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };
 
 export default async function handler(request: Request): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
@@ -75,6 +95,16 @@ export default async function handler(request: Request): Promise<Response> {
   try {
     const body = await request.json().catch(() => ({}));
     const { sessionId, materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = body || {};
+
+    // #region debug-point A:request-start
+    reportDebug("A", "api/generate-block.ts:95", "handler entered", {
+      hasSessionId: Boolean(sessionId),
+      hasApiKey: Boolean(apiKey || process.env.GEMINI_API_KEY),
+      materiaisLength: String(materiaisBrutos || "").length,
+      objectiveLength: String(objective || "").length,
+      centralTopicLength: String(centralTopic || "").length,
+    });
+    // #endregion
 
     if (!sessionId) return json(request, { error: "Sessão de geração ausente." }, 400);
 
@@ -132,6 +162,14 @@ OBJETIVO ESPECÍFICO DESTE RAMO: ${obj}
 
 INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramificações laterais. Seja prolixo no detalhamento técnico interno, garantindo o rigor acadêmico médico.`;
 
+    // #region debug-point B:gemini-start
+    const geminiStartedAt = Date.now();
+    reportDebug("B", "api/generate-block.ts:154", "starting Gemini interaction", {
+      model: "gemini-3.5-flash",
+      promptLength: prompt.length,
+      systemInstructionLength: sysInst.length,
+    });
+    // #endregion
     const interaction = await retryWithDelay(() =>
       ai.interactions.create({
         model: "gemini-3.5-flash",
@@ -139,6 +177,12 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
         system_instruction: sysInst,
       })
     );
+    // #region debug-point B:gemini-end
+    reportDebug("B", "api/generate-block.ts:164", "Gemini interaction finished", {
+      durationMs: Date.now() - geminiStartedAt,
+      stepCount: Array.isArray((interaction as any)?.steps) ? (interaction as any).steps.length : 0,
+    });
+    // #endregion
 
     let branchText = "";
     const steps = ((interaction as any)?.steps ?? []) as any[];
@@ -149,6 +193,13 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
       }
     }
 
+    // #region debug-point C:supabase-start
+    const supabaseStartedAt = Date.now();
+    reportDebug("C", "api/generate-block.ts:178", "starting Supabase consume RPC", {
+      hasAccessToken: Boolean(accessToken),
+      hasSupabaseUrl: Boolean(supabaseUrl),
+    });
+    // #endregion
     const rpcResponse = await fetch(`${supabaseUrl}/rest/v1/rpc/consume_generation_session`, {
       method: "POST",
       headers: {
@@ -158,6 +209,13 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
       },
       body: JSON.stringify({ p_session_id: String(sessionId) }),
     });
+    // #region debug-point C:supabase-end
+    reportDebug("C", "api/generate-block.ts:193", "Supabase consume RPC finished", {
+      durationMs: Date.now() - supabaseStartedAt,
+      status: rpcResponse.status,
+      ok: rpcResponse.ok,
+    });
+    // #endregion
 
     const rpcContentType = rpcResponse.headers.get("content-type") || "";
     const rpcPayload = rpcContentType.includes("application/json")
@@ -177,9 +235,20 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
 
     if (!allowed) return json(request, { error: "Sessão expirada ou inválida." }, 403);
 
+    // #region debug-point D:response-ready
+    reportDebug("D", "api/generate-block.ts:212", "returning success response", {
+      markdownLength: branchText.trim().length,
+    });
+    // #endregion
     return json(request, { markdown: branchText.trim() }, 200);
   } catch (error: any) {
     const message = String(error?.message || "Internal Server Error");
+    // #region debug-point E:catch
+    reportDebug("E", "api/generate-block.ts:217", "handler failed", {
+      message,
+      name: String(error?.name || ""),
+    });
+    // #endregion
     const status = isRetryableGeminiError(message) ? 429 : 500;
     return json(request, { error: message }, status);
   }
