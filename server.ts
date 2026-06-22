@@ -229,7 +229,11 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
       res.json({ markdown: branchText.trim() });
     } catch (error: any) {
       console.error("[SERVER ERROR]", error);
-      res.status(500).json({ error: error.message || "Internal Server Error" });
+      const message = String(error?.message || "Internal Server Error");
+      const msg = message.toLowerCase();
+      const retryable =
+        msg.includes("429") || msg.includes("quota") || msg.includes("503") || msg.includes("overloaded") || msg.includes("rate limit");
+      res.status(retryable ? 429 : 500).json({ error: message });
     }
   });
 

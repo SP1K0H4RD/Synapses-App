@@ -28,6 +28,16 @@ const retryWithDelay = async <T>(fn: () => Promise<T>, retries = 1, delayMs = 15
   }
 };
 
+const isRetryableGeminiError = (message: string) => {
+  const msg = (message || "").toLowerCase();
+  if (msg.includes("429")) return true;
+  if (msg.includes("quota")) return true;
+  if (msg.includes("503")) return true;
+  if (msg.includes("overloaded")) return true;
+  if (msg.includes("rate limit")) return true;
+  return false;
+};
+
 const getBearerToken = (request: Request): string | null => {
   const raw = request.headers.get("authorization") || "";
   const trimmed = raw.trim();
@@ -143,6 +153,8 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
 
     return json({ markdown: branchText.trim() }, 200);
   } catch (error: any) {
-    return json({ error: String(error?.message || "Internal Server Error") }, 500);
+    const message = String(error?.message || "Internal Server Error");
+    const status = isRetryableGeminiError(message) ? 429 : 500;
+    return json({ error: message }, status);
   }
 }

@@ -6,6 +6,8 @@ export async function generateMedicalMap(
   apiKey?: string,
   accessToken?: string
 ): Promise<string> {
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
   const getApiCandidateUrls = (path: string): URL[] => {
     const appUrlRaw = (globalThis as any).__APP_URL__ as string | undefined;
     const appUrl = typeof appUrlRaw === "string" ? appUrlRaw.trim() : "";
@@ -32,6 +34,16 @@ export async function generateMedicalMap(
   if (!accessToken) {
     throw new Error("Faça login para continuar.");
   }
+
+  const isRetryableError = (status: number | null, message: string) => {
+    const msg = (message || "").toLowerCase();
+    if (status === 429 || status === 503) return true;
+    if (msg.includes("429")) return true;
+    if (msg.includes("quota")) return true;
+    if (msg.includes("overloaded")) return true;
+    if (msg.includes("rate limit")) return true;
+    return false;
+  };
 
   const parseObjectives = (raw: string): string[] => {
     const bloomVerbs =
@@ -66,29 +78,54 @@ export async function generateMedicalMap(
         });
 
         const contentType = response.headers.get("content-type") || "";
-        const errorBody = contentType.includes("application/json")
+        const parsedBody = contentType.includes("application/json")
           ? await response.json().catch(() => ({}))
           : await response.text().catch(() => "");
 
         if (!response.ok) {
-          const errorMessage =
-            typeof errorBody === "object" && errorBody && "error" in errorBody
-              ? String((errorBody as any).error)
-              : typeof errorBody === "string" && errorBody.trim().length > 0
-                ? errorBody
-                : `Erro ${response.status}`;
+          const errorMessage = (() => {
+            if (typeof parsedBody === "object" && parsedBody && "error" in (parsedBody as any)) return String((parsedBody as any).error);
+            if (typeof parsedBody === "string" && parsedBody.trim().length > 0) return parsedBody;
+            return `Erro ${response.status}`;
+          })();
 
           if (response.status === 404) {
             lastError = new Error(`Erro 404 em ${apiUrl.toString()}`);
             continue;
           }
 
-          throw new Error(errorMessage);
+          const error = new Error(errorMessage) as Error & { status?: number };
+          error.status = response.status;
+          throw error;
         }
 
-        return (errorBody as T) ?? ({} as T);
+        return (parsedBody as T) ?? ({} as T);
       } catch (e) {
         lastError = e;
+      }
+    }
+
+    if (lastError instanceof Error) throw lastError;
+    throw new Error("Falha ao chamar a API.");
+  };
+
+  const callJsonWithRetry = async <T>(
+    path: string,
+    body: unknown,
+    retries = 5,
+    delayMs = 15000
+  ): Promise<T> => {
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await callJson<T>(path, body);
+      } catch (e: any) {
+        lastError = e;
+        const status = typeof e?.status === "number" ? e.status : null;
+        const message = typeof e?.message === "string" ? e.message : String(e || "");
+        if (!isRetryableError(status, message) || attempt === retries - 1) throw e;
+        await delay(delayMs);
       }
     }
 
@@ -103,7 +140,7 @@ export async function generateMedicalMap(
   let finalMarkdown = `# ${centralTopic}\n\n`;
 
   for (const objective of listObjectives) {
-    const data = await callJson<{ markdown: string }>("/api/generate-block", {
+    const data = await callJsonWithRetry<{ markdown: string }>("/api/generate-block", {
       sessionId,
       materiaisBrutos,
       objective,

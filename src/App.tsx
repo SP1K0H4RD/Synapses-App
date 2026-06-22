@@ -371,7 +371,10 @@ export default function App() {
                           <button onClick={() => setShowApiInput(false)} className="text-slate-300 hover:text-slate-500 p-1">×</button>
                         </div>
                         <div className="relative">
+                          <label htmlFor="gemini-api-key" className="sr-only">Gemini API Key</label>
                           <input 
+                            id="gemini-api-key"
+                            name="geminiApiKey"
                             type={showKey ? "text" : "password"}
                             value={apiKeyInput}
                             onChange={(e) => setApiKeyInput(e.target.value)}
@@ -475,7 +478,7 @@ export default function App() {
                   studyFiles.length > 0 ? 'border-green-200 bg-green-50/30 text-green-700' : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-500'
                 }`}
               >
-                <input ref={studyInputRef} type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
+                <input id="study-files" name="studyFiles" ref={studyInputRef} type="file" className="hidden" accept=".pdf" multiple onChange={handleFileUpload} />
                 <Upload className="w-8 h-8 mb-3" />
                 <span className="text-sm font-bold uppercase tracking-wider">Materiais</span>
                 <p className="text-[10px] mt-1 text-slate-400">PDFs de livros, artigos ou apostilas</p>
@@ -507,8 +510,10 @@ export default function App() {
 
             {/* Central Topic */}
             <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest px-1">Tópico Central do Mapa</label>
+              <label htmlFor="central-topic" className="text-xs font-bold text-slate-500 uppercase tracking-widest px-1">Tópico Central do Mapa</label>
               <input 
+                id="central-topic"
+                name="centralTopic"
                 type="text"
                 value={centralTopic}
                 onChange={(e) => setCentralTopic(e.target.value)}
@@ -519,13 +524,15 @@ export default function App() {
 
             {/* Objectives */}
             <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest px-1 flex flex-wrap items-baseline gap-2">
+              <label htmlFor="tutoria-objectives" className="text-xs font-bold text-slate-500 uppercase tracking-widest px-1 flex flex-wrap items-baseline gap-2">
                 Objetivos da Tutoria
                 <span className="text-[10px] font-medium text-slate-400 leading-none uppercase italic">
                   (Caso algum objetivo tenha mais de um comando, sugiro separar)
                 </span>
               </label>
               <textarea 
+                id="tutoria-objectives"
+                name="objectives"
                 value={objectives}
                 onChange={(e) => setObjectives(e.target.value)}
                 placeholder="Ex: 1. Fisiopatologia da ICC; 2. Classificação de NYHA..."
@@ -536,7 +543,7 @@ export default function App() {
             {/* Extension Slider */}
             <div className="space-y-3">
               <div className="flex justify-between items-center px-1">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex flex-wrap items-baseline gap-1">
+                <label htmlFor="extension-range" className="text-xs font-bold text-slate-500 uppercase tracking-widest flex flex-wrap items-baseline gap-1">
                   Tamanho do Mapa 
                   <span className="text-[10px] font-medium text-slate-400 leading-none">
                     (Tamanho recomendado: 200 a 300 palavras por objetivo)
@@ -545,6 +552,8 @@ export default function App() {
                 <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">{extension} palavras</span>
               </div>
               <input 
+                id="extension-range"
+                name="extension"
                 type="range" min="500" max="2000" step="50"
                 value={extension}
                 onChange={(e) => setExtension(parseInt(e.target.value))}
