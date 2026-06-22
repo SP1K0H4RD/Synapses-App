@@ -69,8 +69,56 @@ async function startServer() {
       .filter((o) => o.length > 2);
   };
 
-  app.post("/api/generate-map", async (req, res) => {
-    const { materiaisBrutos, objetivos, centralTopic, apiKey, extensao } = req.body as Record<string, unknown>;
+  app.post("/api/generate-map", (_req, res) => {
+    res.status(410).json({ error: "Endpoint descontinuado. Use /api/start-generation e /api/generate-block." });
+  });
+
+  app.post("/api/start-generation", async (req, res) => {
+    const { objetivos } = req.body as Record<string, unknown>;
+
+    if (!isSupabaseConfigured) {
+      return res.status(500).json({ error: "Supabase não configurado no servidor." });
+    }
+
+    const accessToken = getBearerToken(req);
+    if (!accessToken) {
+      return res.status(401).json({ error: "Faça login para continuar." });
+    }
+
+    const objectivesList = parseObjectives(typeof objetivos === "string" ? objetivos : "");
+    if (objectivesList.length === 0) {
+      return res.status(400).json({ error: "Nenhum objetivo identificado." });
+    }
+
+    try {
+      const sb = createSupabaseForRequest(accessToken);
+      const { data: userData, error: userError } = await sb.auth.getUser();
+      const user = userData?.user;
+      if (userError || !user) {
+        return res.status(401).json({ error: "Sessão inválida. Faça login novamente." });
+      }
+
+      const { data: sessionId, error: rpcError } = await sb.rpc("start_generation_session", {
+        p_objectives_count: objectivesList.length,
+        cost: 10,
+      });
+
+      if (rpcError) {
+        return res.status(500).json({ error: "Falha ao iniciar sessão de geração." });
+      }
+      if (!sessionId) {
+        return res.status(402).json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." });
+      }
+
+      res.json({ sessionId });
+    } catch (error: any) {
+      console.error("[SERVER ERROR]", error);
+      res.status(500).json({ error: error.message || "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/generate-block", async (req, res) => {
+    const { sessionId, materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = req.body as Record<string, unknown>;
 
     if (!isSupabaseConfigured) {
       return res.status(500).json({ error: "Supabase não configurado no servidor." });
@@ -86,19 +134,19 @@ async function startServer() {
       return res.status(400).json({ error: "Gemini API Key is required." });
     }
 
-    const central = typeof centralTopic === "string" ? centralTopic.trim() : "";
-    if (!central) {
-      return res.status(400).json({ error: "Tópico central é obrigatório." });
-    }
+    const sid = typeof sessionId === "string" ? sessionId.trim() : "";
+    const obj = typeof objective === "string" ? objective.trim() : "";
+    const topic = typeof centralTopic === "string" ? centralTopic.trim() : "";
+    const materiais = typeof materiaisBrutos === "string" ? materiaisBrutos : "";
+    const wordsRaw =
+      typeof extensionPerObjective === "number" && Number.isFinite(extensionPerObjective)
+        ? extensionPerObjective
+        : Number(extensionPerObjective);
+    const words = Number.isFinite(wordsRaw) ? Math.max(100, Math.floor(wordsRaw)) : 500;
 
-    const objectivesList = parseObjectives(typeof objetivos === "string" ? objetivos : "");
-    if (objectivesList.length === 0) {
-      return res.status(400).json({ error: "Nenhum objetivo identificado." });
+    if (!sid || !obj || !topic || !materiais) {
+      return res.status(400).json({ error: "Parâmetros inválidos." });
     }
-
-    const totalExtension = typeof extensao === "number" && Number.isFinite(extensao) ? extensao : Number(extensao);
-    const normalizedExtension = Number.isFinite(totalExtension) ? Math.max(100, Math.floor(totalExtension)) : 500;
-    const extensionPerObjective = Math.floor(normalizedExtension / objectivesList.length);
 
     try {
       const sb = createSupabaseForRequest(accessToken);
@@ -108,21 +156,17 @@ async function startServer() {
         return res.status(401).json({ error: "Sessão inválida. Faça login novamente." });
       }
 
-      const { data: allowed, error: rpcError } = await sb.rpc("use_tokens", { p_user_id: user.id, cost: 10 });
-      if (rpcError) {
-        return res.status(500).json({ error: "Falha ao validar tokens." });
+      const { data: allowed, error: consumeError } = await sb.rpc("consume_generation_session", { p_session_id: sid });
+      if (consumeError) {
+        return res.status(500).json({ error: "Falha ao validar sessão de geração." });
       }
       if (allowed !== true) {
-        return res.status(402).json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." });
+        return res.status(403).json({ error: "Sessão expirada ou inválida." });
       }
 
       const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
-      const materiais = typeof materiaisBrutos === "string" ? materiaisBrutos : "";
-      let finalMarkdown = `# ${central}\n\n`;
-
-      for (const objective of objectivesList) {
-        const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
+      const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
 
 ESTRUTURA OBRIGATÓRIA (Ritmo de Pontes):
 Cada nível do mapa deve alternar entre [CONCEITO] e [CONECTIVO].
@@ -149,52 +193,44 @@ REGRAS DE EXECUÇÃO:
 4. PROIBIÇÕES TOTAIS: 
    - Proibido uso de negritos (****). 
    - Proibido uso de sub-headers (###, ####). Use apenas sub-bullets (-) para níveis internos.
-5. VOLUME: Detalhe exaustivamente para atingir cerca de ${extensionPerObjective} palavras para ESTE objetivo.
+5. VOLUME: Detalhe exaustivamente para atingir cerca de ${words} palavras para ESTE objetivo.
 6. RAMIFICAÇÃO: Crie múltiplas ramificações laterais para melhorar o design visual.
 
-Gere o Markdown começando diretamente em ## ${objective}.`;
+Gere o Markdown começando diretamente em ## ${obj}.`;
 
-        const prompt = `
+      const prompt = `
 MATERIAIS DE ESTUDO (Use como fonte absoluta):
 ${materiais.substring(0, 45000)}
 
-TÓPICO CENTRAL DO MAPA: ${central}
-OBJETIVO ESPECÍFICO DESTE RAMO: ${objective}
+TÓPICO CENTRAL DO MAPA: ${topic}
+OBJETIVO ESPECÍFICO DESTE RAMO: ${obj}
 
 INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramificações laterais. Seja prolixo no detalhamento técnico interno, garantindo o rigor acadêmico médico.`;
 
-        const interaction = await retryWithDelay(
-          () =>
-            ai.interactions.create({
-              model: "gemini-3.5-flash",
-              input: prompt,
-              system_instruction: sysInst,
-            }),
-          5,
-          15000
-        );
+      const interaction = await retryWithDelay(
+        () =>
+          ai.interactions.create({
+            model: "gemini-3.5-flash",
+            input: prompt,
+            system_instruction: sysInst,
+          }),
+        2,
+        2000
+      );
 
-        let branchText = "";
-        for (const step of interaction.steps) {
-          if (step.type === "model_output") {
-            const textContent = (step as any).content?.find((c: any) => c?.type === "text");
-            if (textContent?.text) branchText += String(textContent.text);
-          }
+      let branchText = "";
+      for (const step of interaction.steps) {
+        if (step.type === "model_output") {
+          const textContent = (step as any).content?.find((c: any) => c?.type === "text");
+          if (textContent?.text) branchText += String(textContent.text);
         }
-
-        finalMarkdown += branchText.trim() + "\n\n";
-        await new Promise((r) => setTimeout(r, 1000));
       }
 
-      res.json({ markdown: finalMarkdown.trim() });
+      res.json({ markdown: branchText.trim() });
     } catch (error: any) {
       console.error("[SERVER ERROR]", error);
       res.status(500).json({ error: error.message || "Internal Server Error" });
     }
-  });
-
-  app.post("/api/generate-block", (_req, res) => {
-    res.status(410).json({ error: "Endpoint descontinuado. Atualize o cliente." });
   });
 
   // Vite integration
