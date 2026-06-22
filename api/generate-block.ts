@@ -77,8 +77,6 @@ const getBearerToken = (request: Request): string | null => {
   return token.length > 0 ? token : null;
 };
 
-export const config = { runtime: "nodejs" };
-
 export default async function handler(request: Request): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
   if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
