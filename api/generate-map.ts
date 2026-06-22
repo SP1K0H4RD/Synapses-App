@@ -3,6 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const json = (body: unknown, status = 200): Response => {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+};
+
 const retryWithDelay = async <T>(fn: () => Promise<T>, retries = 2, delayMs = 2000): Promise<T> => {
   try {
     return await fn();
@@ -47,74 +54,73 @@ const parseObjectives = (objetivosRaw: string): string[] => {
 
 export const config = { runtime: "edge" };
 
-export default {
-  async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST") {
-      return Response.json({ error: "Method not allowed" }, { status: 405 });
+export default async function handler(request: Request): Promise<Response> {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey =
+    process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return json({ error: "Supabase não configurado." }, 500);
+  }
+
+  try {
+    const accessToken = getBearerToken(request);
+    if (!accessToken) {
+      return json({ error: "Faça login para continuar." }, 401);
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-    const supabaseAnonKey =
-      process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const body = await request.json().catch(() => ({}));
+    const { materiaisBrutos, objetivos, centralTopic, apiKey, extensao } = body || {};
 
-    if (!supabaseUrl || !supabaseAnonKey) {
-      return Response.json({ error: "Supabase não configurado." }, { status: 500 });
+    const usedApiKey = apiKey || process.env.GEMINI_API_KEY;
+    if (!usedApiKey) {
+      return json({ error: "Gemini API Key is required." }, 400);
     }
 
-    try {
-      const accessToken = getBearerToken(request);
-      if (!accessToken) {
-        return Response.json({ error: "Faça login para continuar." }, { status: 401 });
-      }
+    const central = String(centralTopic || "").trim();
+    if (!central) {
+      return json({ error: "Tópico central é obrigatório." }, 400);
+    }
 
-      const body = await request.json().catch(() => ({}));
-      const { materiaisBrutos, objetivos, centralTopic, apiKey, extensao } = body || {};
+    const objectivesList = parseObjectives(String(objetivos || ""));
+    if (objectivesList.length === 0) {
+      return json({ error: "Nenhum objetivo identificado." }, 400);
+    }
 
-      const usedApiKey = apiKey || process.env.GEMINI_API_KEY;
-      if (!usedApiKey) {
-        return Response.json({ error: "Gemini API Key is required." }, { status: 400 });
-      }
+    const totalExtensionRaw = typeof extensao === "number" ? extensao : Number(extensao);
+    const totalExtension = Number.isFinite(totalExtensionRaw) ? Math.max(100, Math.floor(totalExtensionRaw)) : 500;
+    const extensionPerObjective = Math.floor(totalExtension / objectivesList.length);
 
-      const central = String(centralTopic || "").trim();
-      if (!central) {
-        return Response.json({ error: "Tópico central é obrigatório." }, { status: 400 });
-      }
+    const sb = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
 
-      const objectivesList = parseObjectives(String(objetivos || ""));
-      if (objectivesList.length === 0) {
-        return Response.json({ error: "Nenhum objetivo identificado." }, { status: 400 });
-      }
+    const { data: userData, error: userError } = await sb.auth.getUser();
+    const user = userData?.user;
+    if (userError || !user) {
+      return json({ error: "Sessão inválida. Faça login novamente." }, 401);
+    }
 
-      const totalExtensionRaw = typeof extensao === "number" ? extensao : Number(extensao);
-      const totalExtension = Number.isFinite(totalExtensionRaw) ? Math.max(100, Math.floor(totalExtensionRaw)) : 500;
-      const extensionPerObjective = Math.floor(totalExtension / objectivesList.length);
+    const { data: allowed, error: rpcError } = await sb.rpc("use_tokens", { p_user_id: user.id, cost: 10 });
+    if (rpcError) {
+      return json({ error: "Falha ao validar tokens." }, 500);
+    }
+    if (allowed !== true) {
+      return json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." }, 402);
+    }
 
-      const sb = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-        global: { headers: { Authorization: `Bearer ${accessToken}` } },
-      });
+    const ai = new GoogleGenAI({ apiKey: usedApiKey });
+    const materiais = String(materiaisBrutos || "");
 
-      const { data: userData, error: userError } = await sb.auth.getUser();
-      const user = userData?.user;
-      if (userError || !user) {
-        return Response.json({ error: "Sessão inválida. Faça login novamente." }, { status: 401 });
-      }
+    let finalMarkdown = `# ${central}\n\n`;
 
-      const { data: allowed, error: rpcError } = await sb.rpc("use_tokens", { p_user_id: user.id, cost: 10 });
-      if (rpcError) {
-        return Response.json({ error: "Falha ao validar tokens." }, { status: 500 });
-      }
-      if (allowed !== true) {
-        return Response.json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." }, { status: 402 });
-      }
-
-      const ai = new GoogleGenAI({ apiKey: usedApiKey });
-      const materiais = String(materiaisBrutos || "");
-
-      let finalMarkdown = `# ${central}\n\n`;
-
-      for (const objective of objectivesList) {
-        const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
+    for (const objective of objectivesList) {
+      const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
 
 ESTRUTURA OBRIGATÓRIA (Ritmo de Pontes):
 Cada nível do mapa deve alternar entre [CONCEITO] e [CONECTIVO].
@@ -146,7 +152,7 @@ REGRAS DE EXECUÇÃO:
 
 Gere o Markdown começando diretamente em ## ${objective}.`;
 
-        const prompt = `
+      const prompt = `
 MATERIAIS DE ESTUDO (Use como fonte absoluta):
 ${materiais.substring(0, 45000)}
 
@@ -155,31 +161,29 @@ OBJETIVO ESPECÍFICO DESTE RAMO: ${objective}
 
 INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramificações laterais. Seja prolixo no detalhamento técnico interno, garantindo o rigor acadêmico médico.`;
 
-        const interaction = await retryWithDelay(() =>
-          ai.interactions.create({
-            model: "gemini-3.5-flash",
-            input: prompt,
-            system_instruction: sysInst,
-          })
-        );
+      const interaction = await retryWithDelay(() =>
+        ai.interactions.create({
+          model: "gemini-3.5-flash",
+          input: prompt,
+          system_instruction: sysInst,
+        })
+      );
 
-        let branchText = "";
-        const steps = ((interaction as any)?.steps ?? []) as any[];
-        for (const step of steps) {
-          if (step?.type === "model_output") {
-            const textContent = (step as any).content?.find((c: any) => c.type === "text");
-            if (textContent?.text) branchText += textContent.text;
-          }
+      let branchText = "";
+      const steps = ((interaction as any)?.steps ?? []) as any[];
+      for (const step of steps) {
+        if (step?.type === "model_output") {
+          const textContent = (step as any).content?.find((c: any) => c.type === "text");
+          if (textContent?.text) branchText += textContent.text;
         }
-
-        finalMarkdown += branchText.trim() + "\n\n";
-        await delay(1000);
       }
 
-      return Response.json({ markdown: finalMarkdown.trim() }, { status: 200 });
-    } catch (error: any) {
-      return Response.json({ error: String(error?.message || "Internal Server Error") }, { status: 500 });
+      finalMarkdown += branchText.trim() + "\n\n";
+      await delay(1000);
     }
-  },
-};
 
+    return json({ markdown: finalMarkdown.trim() }, 200);
+  } catch (error: any) {
+    return json({ error: String(error?.message || "Internal Server Error") }, 500);
+  }
+}
