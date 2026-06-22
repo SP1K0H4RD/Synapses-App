@@ -57,7 +57,7 @@ export default function App() {
       .from('profiles')
       .select('tokens')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
     if (requestId !== tokensRequestIdRef.current) return null;
 
@@ -68,7 +68,8 @@ export default function App() {
     }
 
     const value = (data as any)?.tokens;
-    const normalized = typeof value === 'number' ? value : value != null ? Number(value) : null;
+    const parsed = typeof value === 'number' ? value : value != null ? Number(value) : NaN;
+    const normalized = Number.isFinite(parsed) ? parsed : null;
     setTokens(normalized);
     setTokensLoading(false);
     return normalized;
@@ -209,19 +210,12 @@ export default function App() {
       return;
     }
 
-    const { data: profileData, error: profileError } = await supabase
-      .from('profiles')
-      .select('tokens')
-      .eq('user_id', currentUser.id)
-      .single();
-
-    if (profileError) {
-      setError('Erro ao buscar tokens. Tente novamente.');
+    const currentTokens = await fetchTokens(currentUser.id);
+    if (currentTokens == null) {
+      setError('Não foi possível carregar seus tokens. Tente novamente.');
       return;
     }
-
-    const currentTokens = (profileData as any)?.tokens;
-    if (typeof currentTokens !== 'number' || currentTokens < 10) {
+    if (currentTokens < 10) {
       setError('Tokens insuficientes. Você precisa de pelo menos 10 tokens para usar a ferramenta.');
       return;
     }
