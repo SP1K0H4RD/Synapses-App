@@ -41,6 +41,39 @@ export default function App() {
   
   const studyInputRef = useRef<HTMLInputElement>(null);
 
+  const tokensRequestIdRef = useRef(0);
+
+  const fetchTokens = async (userId: string) => {
+    if (!supabase) return null;
+    if (!userId) {
+      setTokens(null);
+      return null;
+    }
+
+    const requestId = ++tokensRequestIdRef.current;
+    setTokensLoading(true);
+
+    const { data, error: tokensError } = await supabase
+      .from('profiles')
+      .select('tokens')
+      .eq('user_id', userId)
+      .single();
+
+    if (requestId !== tokensRequestIdRef.current) return null;
+
+    if (tokensError) {
+      setTokens(null);
+      setTokensLoading(false);
+      return null;
+    }
+
+    const value = (data as any)?.tokens;
+    const normalized = typeof value === 'number' ? value : value != null ? Number(value) : null;
+    setTokens(normalized);
+    setTokensLoading(false);
+    return normalized;
+  };
+
   useEffect(() => {
     if (!supabase) {
       setAuthLoading(false);
@@ -59,9 +92,15 @@ export default function App() {
         supabase.auth.getUser()
       ]);
       if (!mounted) return;
+      const nextUser = userData.user ?? null;
       setSession(sessionData.session);
-      setUser(userData.user ?? null);
+      setUser(nextUser);
       setAuthLoading(false);
+      if (nextUser?.id) {
+        fetchTokens(nextUser.id);
+      } else {
+        setTokens(null);
+      }
     };
 
     refreshAuth();
@@ -75,40 +114,6 @@ export default function App() {
       authListener.subscription.unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (!supabase) return;
-    if (!user?.id) {
-      setTokens(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    const loadTokens = async () => {
-      setTokensLoading(true);
-      const { data, error: tokensError } = await supabase
-        .from('profiles')
-        .select('tokens')
-        .eq('user_id', user.id)
-        .single();
-
-      if (cancelled) return;
-      if (tokensError) {
-        setTokens(null);
-      } else {
-        const value = (data as any)?.tokens;
-        setTokens(typeof value === 'number' ? value : Number(value));
-      }
-      setTokensLoading(false);
-    };
-
-    loadTokens();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id]);
 
   const userEmail = useMemo(() => user?.email as string | undefined, [user]);
 
@@ -269,15 +274,7 @@ export default function App() {
     } finally {
       setIsProcessing(false);
       const { data: refreshedUser } = await supabase.auth.getUser();
-      if (refreshedUser.user?.id) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('tokens')
-          .eq('user_id', refreshedUser.user.id)
-          .single();
-        const value = (data as any)?.tokens;
-        setTokens(typeof value === 'number' ? value : value != null ? Number(value) : null);
-      }
+      if (refreshedUser.user?.id) fetchTokens(refreshedUser.user.id);
     }
   };
 
