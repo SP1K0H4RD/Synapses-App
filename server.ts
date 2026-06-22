@@ -156,14 +156,6 @@ async function startServer() {
         return res.status(401).json({ error: "Sessão inválida. Faça login novamente." });
       }
 
-      const { data: allowed, error: consumeError } = await sb.rpc("consume_generation_session", { p_session_id: sid });
-      if (consumeError) {
-        return res.status(500).json({ error: "Falha ao validar sessão de geração." });
-      }
-      if (allowed !== true) {
-        return res.status(403).json({ error: "Sessão expirada ou inválida." });
-      }
-
       const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
       const sysInst = `Você é o Designer Master de Mapas Mentais Médicos. Sua missão é replicar o "Padrão Ouro" com RIGOR ABSOLUTO.
@@ -224,6 +216,14 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
           const textContent = (step as any).content?.find((c: any) => c?.type === "text");
           if (textContent?.text) branchText += String(textContent.text);
         }
+      }
+
+      const { data: allowed, error: consumeError } = await sb.rpc("consume_generation_session", { p_session_id: sid });
+      if (consumeError) {
+        return res.status(500).json({ error: "Falha ao validar sessão de geração." });
+      }
+      if (allowed !== true) {
+        return res.status(403).json({ error: "Sessão expirada ou inválida." });
       }
 
       res.json({ markdown: branchText.trim() });

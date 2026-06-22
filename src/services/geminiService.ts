@@ -38,10 +38,13 @@ export async function generateMedicalMap(
   const isRetryableError = (status: number | null, message: string) => {
     const msg = (message || "").toLowerCase();
     if (status === 429 || status === 503) return true;
+    if (status === 504) return true;
     if (msg.includes("429")) return true;
     if (msg.includes("quota")) return true;
     if (msg.includes("overloaded")) return true;
     if (msg.includes("rate limit")) return true;
+    if (msg.includes("timeout")) return true;
+    if (msg.includes("function_invocation_timeout")) return true;
     return false;
   };
 

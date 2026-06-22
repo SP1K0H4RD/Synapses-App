@@ -1,5 +1,4 @@
 import { GoogleGenAI } from "@google/genai";
-import { createClient } from "@supabase/supabase-js";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -61,11 +60,6 @@ export default async function handler(request: Request): Promise<Response> {
   const accessToken = getBearerToken(request);
   if (!accessToken) return json({ error: "Faça login para continuar." }, 401);
 
-  const sb = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    global: { headers: { Authorization: `Bearer ${accessToken}` } },
-  });
-
   try {
     const body = await request.json().catch(() => ({}));
     const { sessionId, materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = body || {};
@@ -82,14 +76,6 @@ export default async function handler(request: Request): Promise<Response> {
     const words = Number.isFinite(wordsRaw) ? Math.max(100, Math.floor(wordsRaw)) : 500;
 
     if (!materiais || !obj || !topic) return json({ error: "Parâmetros inválidos." }, 400);
-
-    const { data: userData, error: userError } = await sb.auth.getUser();
-    const user = userData?.user;
-    if (userError || !user) return json({ error: "Sessão inválida. Faça login novamente." }, 401);
-
-    const { data: allowed, error: consumeError } = await sb.rpc("consume_generation_session", { p_session_id: sessionId });
-    if (consumeError) return json({ error: "Falha ao validar sessão de geração." }, 500);
-    if (allowed !== true) return json({ error: "Sessão expirada ou inválida." }, 403);
 
     const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
@@ -150,6 +136,34 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
         if (textContent?.text) branchText += textContent.text;
       }
     }
+
+    const rpcResponse = await fetch(`${supabaseUrl}/rest/v1/rpc/consume_generation_session`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        apikey: supabaseAnonKey,
+        authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ p_session_id: String(sessionId) }),
+    });
+
+    const rpcContentType = rpcResponse.headers.get("content-type") || "";
+    const rpcPayload = rpcContentType.includes("application/json")
+      ? await rpcResponse.json().catch(() => null)
+      : await rpcResponse.text().catch(() => "");
+
+    if (!rpcResponse.ok) {
+      return json({ error: "Falha ao validar sessão de geração." }, 500);
+    }
+
+    const allowed =
+      typeof rpcPayload === "boolean"
+        ? rpcPayload
+        : typeof rpcPayload === "string"
+          ? rpcPayload.toLowerCase() === "true"
+          : Boolean(rpcPayload);
+
+    if (!allowed) return json({ error: "Sessão expirada ou inválida." }, 403);
 
     return json({ markdown: branchText.trim() }, 200);
   } catch (error: any) {
