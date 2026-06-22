@@ -2,10 +2,21 @@ import { GoogleGenAI } from "@google/genai";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const json = (body: unknown, status = 200): Response => {
+const corsHeaders = (request: Request): Record<string, string> => {
+  const origin = request.headers.get("origin") || "*";
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "authorization, content-type",
+    "access-control-max-age": "86400",
+    vary: "Origin",
+  };
+};
+
+const json = (request: Request, body: unknown, status = 200): Response => {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { ...corsHeaders(request), "content-type": "application/json; charset=utf-8" },
   });
 };
 
@@ -49,25 +60,26 @@ const getBearerToken = (request: Request): string | null => {
 export const config = { runtime: "edge" };
 
 export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+  if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseAnonKey =
     process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-  if (!supabaseUrl || !supabaseAnonKey) return json({ error: "Supabase não configurado." }, 500);
+  if (!supabaseUrl || !supabaseAnonKey) return json(request, { error: "Supabase não configurado." }, 500);
 
   const accessToken = getBearerToken(request);
-  if (!accessToken) return json({ error: "Faça login para continuar." }, 401);
+  if (!accessToken) return json(request, { error: "Faça login para continuar." }, 401);
 
   try {
     const body = await request.json().catch(() => ({}));
     const { sessionId, materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = body || {};
 
-    if (!sessionId) return json({ error: "Sessão de geração ausente." }, 400);
+    if (!sessionId) return json(request, { error: "Sessão de geração ausente." }, 400);
 
     const usedApiKey = apiKey || process.env.GEMINI_API_KEY;
-    if (!usedApiKey) return json({ error: "Gemini API Key is required." }, 400);
+    if (!usedApiKey) return json(request, { error: "Gemini API Key is required." }, 400);
 
     const materiais = String(materiaisBrutos || "");
     const obj = String(objective || "").trim();
@@ -75,7 +87,7 @@ export default async function handler(request: Request): Promise<Response> {
     const wordsRaw = typeof extensionPerObjective === "number" ? extensionPerObjective : Number(extensionPerObjective);
     const words = Number.isFinite(wordsRaw) ? Math.max(100, Math.floor(wordsRaw)) : 500;
 
-    if (!materiais || !obj || !topic) return json({ error: "Parâmetros inválidos." }, 400);
+    if (!materiais || !obj || !topic) return json(request, { error: "Parâmetros inválidos." }, 400);
 
     const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
@@ -153,7 +165,7 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
       : await rpcResponse.text().catch(() => "");
 
     if (!rpcResponse.ok) {
-      return json({ error: "Falha ao validar sessão de geração." }, 500);
+      return json(request, { error: "Falha ao validar sessão de geração." }, 500);
     }
 
     const allowed =
@@ -163,12 +175,12 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
           ? rpcPayload.toLowerCase() === "true"
           : Boolean(rpcPayload);
 
-    if (!allowed) return json({ error: "Sessão expirada ou inválida." }, 403);
+    if (!allowed) return json(request, { error: "Sessão expirada ou inválida." }, 403);
 
-    return json({ markdown: branchText.trim() }, 200);
+    return json(request, { markdown: branchText.trim() }, 200);
   } catch (error: any) {
     const message = String(error?.message || "Internal Server Error");
     const status = isRetryableGeminiError(message) ? 429 : 500;
-    return json({ error: message }, status);
+    return json(request, { error: message }, status);
   }
 }

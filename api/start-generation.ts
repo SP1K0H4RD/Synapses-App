@@ -1,7 +1,18 @@
-const json = (body: unknown, status = 200): Response => {
+const corsHeaders = (request: Request): Record<string, string> => {
+  const origin = request.headers.get("origin") || "*";
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "authorization, content-type",
+    "access-control-max-age": "86400",
+    vary: "Origin",
+  };
+};
+
+const json = (request: Request, body: unknown, status = 200): Response => {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { ...corsHeaders(request), "content-type": "application/json; charset=utf-8" },
   });
 };
 
@@ -34,22 +45,23 @@ const parseObjectivesCount = (objetivosRaw: string): number => {
 export const config = { runtime: "edge" };
 
 export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+  if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseAnonKey =
     process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-  if (!supabaseUrl || !supabaseAnonKey) return json({ error: "Supabase não configurado." }, 500);
+  if (!supabaseUrl || !supabaseAnonKey) return json(request, { error: "Supabase não configurado." }, 500);
 
   const accessToken = getBearerToken(request);
-  if (!accessToken) return json({ error: "Faça login para continuar." }, 401);
+  if (!accessToken) return json(request, { error: "Faça login para continuar." }, 401);
 
   try {
     const body = await request.json().catch(() => ({}));
     const objetivos = String((body as any)?.objetivos || "");
     const objectivesCount = parseObjectivesCount(objetivos);
-    if (objectivesCount <= 0) return json({ error: "Nenhum objetivo identificado." }, 400);
+    if (objectivesCount <= 0) return json(request, { error: "Nenhum objetivo identificado." }, 400);
 
     const rpcResponse = await fetch(`${supabaseUrl}/rest/v1/rpc/start_generation_session`, {
       method: "POST",
@@ -73,7 +85,7 @@ export default async function handler(request: Request): Promise<Response> {
           : typeof payload === "string" && payload.trim().length > 0
             ? payload
             : "Falha ao iniciar sessão de geração.";
-      return json({ error: message }, 500);
+      return json(request, { error: message }, 500);
     }
 
     const sessionId =
@@ -87,10 +99,10 @@ export default async function handler(request: Request): Promise<Response> {
               ? String(payload)
               : "";
 
-    if (!sessionId || sessionId === "null") return json({ error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." }, 402);
+    if (!sessionId || sessionId === "null") return json(request, { error: "Tokens insuficientes. Você precisa de pelo menos 10 tokens." }, 402);
 
-    return json({ sessionId }, 200);
+    return json(request, { sessionId }, 200);
   } catch (error: any) {
-    return json({ error: String(error?.message || "Internal Server Error") }, 500);
+    return json(request, { error: String(error?.message || "Internal Server Error") }, 500);
   }
 }
