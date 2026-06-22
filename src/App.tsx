@@ -14,6 +14,7 @@ import confetti from 'canvas-confetti';
 import { convertMdToXMind } from './services/xmindConverter';
 import { generateMedicalMap } from './services/geminiService';
 import { extractTextFromPdf } from './services/pdfService';
+import { getAppBaseUrl } from './services/appUrl';
 import { isSupabaseConfigured, supabase } from './services/supabaseClient';
 
 export default function App() {
@@ -127,7 +128,7 @@ export default function App() {
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/`
+        redirectTo: new URL('/', getAppBaseUrl()).toString()
       }
     });
     if (signInError) {

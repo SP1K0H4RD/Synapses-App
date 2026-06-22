@@ -1,3 +1,5 @@
+import { getApiCandidateUrls } from './appUrl';
+
 export async function generateMedicalMap(
   materiaisBrutos: string, 
   objetivos: string, 
@@ -7,29 +9,6 @@ export async function generateMedicalMap(
   accessToken?: string
 ): Promise<string> {
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  const getApiCandidateUrls = (path: string): URL[] => {
-    const appUrlRaw = (globalThis as any).__APP_URL__ as string | undefined;
-    const appUrl = typeof appUrlRaw === "string" ? appUrlRaw.trim() : "";
-    const origin = window.location.origin;
-    const pathname = window.location.pathname;
-    const lastSegment = pathname.split("/").filter(Boolean).pop() ?? "";
-    const basePath =
-      pathname.endsWith("/") ? pathname : lastSegment.includes(".") ? pathname.replace(/[^/]+$/, "") : `${pathname}/`;
-
-    const urls = [
-      ...(appUrl ? [new URL(path, appUrl)] : []),
-      new URL(path.replace(/^\//, ""), `${origin}${basePath}`),
-      new URL(path, origin)
-    ];
-    const seen = new Set<string>();
-    return urls.filter((u) => {
-      const key = u.toString();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  };
 
   if (!accessToken) {
     throw new Error("Faça login para continuar.");
