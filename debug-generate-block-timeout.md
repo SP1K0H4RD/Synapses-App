@@ -27,9 +27,11 @@
 - The same route performs a full Gemini generation request before responding, which is exactly the kind of long-running task Vercel recommends moving to Node.js rather than Edge.
 - After switching the file to `config.runtime = "nodejs"`, the symptom changed immediately to `FUNCTION_INVOCATION_FAILED`, which indicates the timeout path was bypassed and the new failure likely happens during invocation/bootstrap rather than after a long Gemini wait.
 - Vercel's current Node.js docs state Node is the default runtime for `/api` functions, so explicit `config.runtime = "nodejs"` is unnecessary and potentially the source of the bootstrap failure.
+- Vercel's current `/api` Web Handler docs for "other frameworks" show `export function POST(...)` or `export default { fetch(...) }` as the supported handler shape. This makes the old `export default async function handler(request: Request)` a strong candidate for the remaining invocation failure under Node.
 
 ## Applied Changes
 
 - Added instrumentation points in `api/generate-block.ts` for request entry, Gemini start/end, Supabase RPC start/end, success response, and catch path.
 - Added `vercel.json` with `maxDuration` for `api/generate-block.ts`.
 - Removed `config.runtime = "nodejs"` from `api/generate-block.ts` and left the function on the default Node.js runtime path with duration controlled by `vercel.json`.
+- Changed `api/generate-block.ts` to the documented Web Handler shape using `export async function POST(...)` plus `OPTIONS(...)`.

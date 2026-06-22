@@ -2,6 +2,19 @@ import { GoogleGenAI } from "@google/genai";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+type NodeRequest = {
+  method?: string;
+  headers?: Record<string, string | string[] | undefined>;
+  body?: unknown;
+  on?: (event: string, listener: (chunk: Buffer | string) => void) => void;
+};
+
+type NodeResponse = {
+  statusCode: number;
+  setHeader: (name: string, value: string) => void;
+  end: (body?: string) => void;
+};
+
 // #region debug-point A:report-helper
 const reportDebug = (hypothesisId: string, location: string, msg: string, data: Record<string, unknown> = {}) => {
   const debugServerUrl = process.env.DEBUG_SERVER_URL || "http://127.0.0.1:7777/event";
@@ -22,8 +35,14 @@ const reportDebug = (hypothesisId: string, location: string, msg: string, data: 
 };
 // #endregion
 
-const corsHeaders = (request: Request): Record<string, string> => {
-  const origin = request.headers.get("origin") || "*";
+const getHeaderValue = (request: NodeRequest, name: string): string => {
+  const value = request.headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0] || "";
+  return typeof value === "string" ? value : "";
+};
+
+const corsHeaders = (request: NodeRequest): Record<string, string> => {
+  const origin = getHeaderValue(request, "origin") || "*";
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "POST, OPTIONS",
@@ -33,11 +52,14 @@ const corsHeaders = (request: Request): Record<string, string> => {
   };
 };
 
-const json = (request: Request, body: unknown, status = 200): Response => {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(request), "content-type": "application/json; charset=utf-8" },
-  });
+const sendJson = (request: NodeRequest, response: NodeResponse, body: unknown, status = 200): void => {
+  const payload = JSON.stringify(body);
+  response.statusCode = status;
+  const headers = { ...corsHeaders(request), "content-type": "application/json; charset=utf-8" };
+  for (const [key, value] of Object.entries(headers)) {
+    response.setHeader(key, value);
+  }
+  response.end(payload);
 };
 
 const retryWithDelay = async <T>(fn: () => Promise<T>, retries = 1, delayMs = 1500): Promise<T> => {
@@ -68,8 +90,8 @@ const isRetryableGeminiError = (message: string) => {
   return false;
 };
 
-const getBearerToken = (request: Request): string | null => {
-  const raw = request.headers.get("authorization") || "";
+const getBearerToken = (request: NodeRequest): string | null => {
+  const raw = getHeaderValue(request, "authorization");
   const trimmed = raw.trim();
   if (!trimmed) return null;
   if (!trimmed.toLowerCase().startsWith("bearer ")) return null;
@@ -77,21 +99,67 @@ const getBearerToken = (request: Request): string | null => {
   return token.length > 0 ? token : null;
 };
 
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
-  if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
+const readJsonBody = async (request: NodeRequest): Promise<Record<string, unknown>> => {
+  if (request.body && typeof request.body === "object" && !Buffer.isBuffer(request.body)) {
+    return request.body as Record<string, unknown>;
+  }
+
+  if (typeof request.body === "string") {
+    return JSON.parse(request.body || "{}");
+  }
+
+  if (Buffer.isBuffer(request.body)) {
+    return JSON.parse(request.body.toString("utf8") || "{}");
+  }
+
+  if (typeof request.on !== "function") {
+    return {};
+  }
+
+  const rawBody = await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on?.("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    request.on?.("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on?.("error", reject);
+  });
+
+  return rawBody ? JSON.parse(rawBody) : {};
+};
+
+const handleRequest = async (request: NodeRequest, response: NodeResponse): Promise<void> => {
+  if (request.method === "OPTIONS") {
+    response.statusCode = 204;
+    for (const [key, value] of Object.entries(corsHeaders(request))) {
+      response.setHeader(key, value);
+    }
+    response.end();
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(request, response, { error: "Method not allowed" }, 405);
+    return;
+  }
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseAnonKey =
     process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-  if (!supabaseUrl || !supabaseAnonKey) return json(request, { error: "Supabase não configurado." }, 500);
+  if (!supabaseUrl || !supabaseAnonKey) {
+    sendJson(request, response, { error: "Supabase não configurado." }, 500);
+    return;
+  }
 
   const accessToken = getBearerToken(request);
-  if (!accessToken) return json(request, { error: "Faça login para continuar." }, 401);
+  if (!accessToken) {
+    sendJson(request, response, { error: "Faça login para continuar." }, 401);
+    return;
+  }
 
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBody(request).catch(() => ({}));
     const { sessionId, materiaisBrutos, objective, centralTopic, apiKey, extensionPerObjective } = body || {};
 
     // #region debug-point A:request-start
@@ -104,10 +172,16 @@ export default async function handler(request: Request): Promise<Response> {
     });
     // #endregion
 
-    if (!sessionId) return json(request, { error: "Sessão de geração ausente." }, 400);
+    if (!sessionId) {
+      sendJson(request, response, { error: "Sessão de geração ausente." }, 400);
+      return;
+    }
 
     const usedApiKey = apiKey || process.env.GEMINI_API_KEY;
-    if (!usedApiKey) return json(request, { error: "Gemini API Key is required." }, 400);
+    if (!usedApiKey) {
+      sendJson(request, response, { error: "Gemini API Key is required." }, 400);
+      return;
+    }
 
     const materiais = String(materiaisBrutos || "");
     const obj = String(objective || "").trim();
@@ -115,7 +189,10 @@ export default async function handler(request: Request): Promise<Response> {
     const wordsRaw = typeof extensionPerObjective === "number" ? extensionPerObjective : Number(extensionPerObjective);
     const words = Number.isFinite(wordsRaw) ? Math.max(100, Math.floor(wordsRaw)) : 500;
 
-    if (!materiais || !obj || !topic) return json(request, { error: "Parâmetros inválidos." }, 400);
+    if (!materiais || !obj || !topic) {
+      sendJson(request, response, { error: "Parâmetros inválidos." }, 400);
+      return;
+    }
 
     const ai = new GoogleGenAI({ apiKey: usedApiKey });
 
@@ -221,7 +298,8 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
       : await rpcResponse.text().catch(() => "");
 
     if (!rpcResponse.ok) {
-      return json(request, { error: "Falha ao validar sessão de geração." }, 500);
+      sendJson(request, response, { error: "Falha ao validar sessão de geração." }, 500);
+      return;
     }
 
     const allowed =
@@ -231,14 +309,17 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
           ? rpcPayload.toLowerCase() === "true"
           : Boolean(rpcPayload);
 
-    if (!allowed) return json(request, { error: "Sessão expirada ou inválida." }, 403);
+    if (!allowed) {
+      sendJson(request, response, { error: "Sessão expirada ou inválida." }, 403);
+      return;
+    }
 
     // #region debug-point D:response-ready
     reportDebug("D", "api/generate-block.ts:212", "returning success response", {
       markdownLength: branchText.trim().length,
     });
     // #endregion
-    return json(request, { markdown: branchText.trim() }, 200);
+    sendJson(request, response, { markdown: branchText.trim() }, 200);
   } catch (error: any) {
     const message = String(error?.message || "Internal Server Error");
     // #region debug-point E:catch
@@ -248,6 +329,10 @@ INSTRUÇÃO: Expanda este objetivo especificamente, criando múltiplas ramifica�
     });
     // #endregion
     const status = isRetryableGeminiError(message) ? 429 : 500;
-    return json(request, { error: message }, status);
+    sendJson(request, response, { error: message }, status);
   }
+};
+
+export default async function handler(request: NodeRequest, response: NodeResponse): Promise<void> {
+  await handleRequest(request, response);
 }
